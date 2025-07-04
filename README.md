@@ -1,12 +1,12 @@
 # 🔥 PHLAME Baselines
 ---
 
-## 🎯 Purpose
+## 🎯 About PHLAME
 **PHLAME** (**PH**enotype prediction **L**ive **A**ssessment from **ME**tagenomic sequencing data) is a **standardized 
 and comprehensive benchmark** for evaluating methods that predict **host phenotypes from gut metagenomic data**.
+
 PHLAME provides an **open and fair platform** for comparing predictive methods, with the goal of advancing the use of 
-metagenomic data in Health research Disease monitoring. We Invite **method developers** to push the boundaries of performance
-while ensuring usability Encourage **users** to explore emerging tools that may better meet their needs
+metagenomic data in Health research Disease monitoring.
 
 It includes a diverse set of **binary classification tasks**, each consisting of:
 - A labeled **training set**
@@ -14,7 +14,7 @@ It includes a diverse set of **binary classification tasks**, each consisting of
 
 ---
 
-## 📦 About This Repository
+## 📦 This Repository
 
 This repository contains the code used to run the **baseline methods** described in the PHLAME manuscript.
 
@@ -50,7 +50,7 @@ Some tools — specifically the Fully Connected Neural Network (FCNN) and DeepMi
 
 * You may need to adapt the code or scripts to your compute environment (e.g., SLURM-based clusters or other schedulers).
 
-# 📚 More Information
+# 📚 Want to learn more on PHLAME?
 
 - 🔗 **Official website**: [https://phlame.yassourlab.com/](https://phlame.yassourlab.com/)
 - 📄 **Manuscript on bioRxiv**: [https://www.biorxiv.org/content/10.1101/2025.06.12.658885v1](https://www.biorxiv.org/content/10.1101/2025.06.12.658885v1)
@@ -59,5 +59,4 @@ Some tools — specifically the Fully Connected Neural Network (FCNN) and DeepMi
 
 ## Acknowledgments
 
-The DeepMicro code used in this repository was adapted from the original implementation available on [DeepMicro's GitHub Repository](https://github.com/minoh0201/DeepMicro).  
-We would like to thank them for making their code publicly available and therefore making it possible for us to modify and extended it to suit PHLAME's training & test scheme.
+The DeepMicro code used in this repository was adapted from the original implementation available on [DeepMicro's GitHub Repository](https://github.com/minoh0201/DeepMicro). We would like to thank them for making their code publicly available and therefore making it possible for us to modify and extended it to suit PHLAME's training & test scheme.
