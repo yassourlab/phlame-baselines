@@ -1,0 +1,12 @@
+name: phlame_fcnn_python_env
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python=3.13.3
+  - numpy=2.2.4
+  - pandas=2.2.3
+  - pip=25.0.1
+  - pip:
+      - torch==2.6.0
