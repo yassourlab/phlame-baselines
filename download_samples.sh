@@ -7,15 +7,17 @@
 #SBATCH --cpus-per-task=1
 
 # ============================================================================
-# SRA Download Script with Multiple Fallback Mechanisms
+# This script downloads fastq files for samples from the LAMPP's training and test csv files. 
+# It assumes that you use the SLURM job management platform.
 # ============================================================================
 # 
 # Usage:
-#   sbatch --array=1-N download_samples.sh /path/to/manifest.csv /output/dir
-#
+#   sbatch --array=1-N download_samples.sh /path/to/task_data.csv /output/dir
+#   # N should be the number of rows in the CSV file
 # Arguments:
 #   $1: Path to CSV file with 'sample_id' column
 #   $2: Output directory for downloaded fastq files
+#    
 #
 # The script will:
 #   1. Read the sample_id from the SLURM_ARRAY_TASK_ID row

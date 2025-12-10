@@ -1,4 +1,4 @@
-name: phlame_deepmicro_python_env
+name: lampp_deepmicro_python_env
 channels:
   - conda-forge
   - bioconda

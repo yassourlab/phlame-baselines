@@ -160,7 +160,7 @@ class DeepMicrobiome(object):
         self.printDataShapes()
 
     #Shallow Autoencoder & Deep Autoencoder
-    def ae(self, dims = [50], epochs= 2000, batch_size=100, verbose=2, loss='mean_squared_error', latent_act=False, output_act=False, act='relu', patience=20, val_rate=0.2, no_trn=False):
+    def ae(self, dims = [50], epochs= 2000, batch_size=100, verbose=0, loss='mean_squared_error', latent_act=False, output_act=False, act='relu', patience=20, val_rate=0.2, no_trn=False):
 
         # manipulating an experiment identifier in the output file
         if patience != 20:
@@ -187,8 +187,8 @@ class DeepMicrobiome(object):
             os.remove(modelName)
 
         # callbacks for each epoch
-        callbacks = [EarlyStopping(monitor='val_loss', patience=patience, mode='min', verbose=1),
-                     ModelCheckpoint(modelName, monitor='val_loss', mode='min', verbose=1, save_best_only=True)]
+        callbacks = [EarlyStopping(monitor='val_loss', patience=patience, mode='min', verbose=0),
+                     ModelCheckpoint(modelName, monitor='val_loss', mode='min', verbose=0, save_best_only=True)]
 
         # spliting the training set into the inner-train and the inner-test set (validation set)
         X_inner_train, X_inner_test, y_inner_train, y_inner_test = train_test_split(self.X_train, self.y_train, test_size=val_rate, random_state=self.seed, stratify=self.y_train)
@@ -222,7 +222,7 @@ class DeepMicrobiome(object):
         self.X_test = self.encoder.predict(self.X_test)
 
     # Variational Autoencoder
-    def vae(self, dims = [10], epochs=2000, batch_size=100, verbose=2, loss='mse', output_act=False, act='relu', patience=25, beta=1.0, warmup=True, warmup_rate=0.01, val_rate=0.2, no_trn=False):
+    def vae(self, dims = [10], epochs=2000, batch_size=100, verbose=0, loss='mse', output_act=False, act='relu', patience=25, beta=1.0, warmup=True, warmup_rate=0.01, val_rate=0.2, no_trn=False):
 
         # manipulating an experiment identifier in the output file
         if patience != 25:
@@ -248,8 +248,8 @@ class DeepMicrobiome(object):
             os.remove(modelName)
 
         # callbacks for each epoch
-        callbacks = [EarlyStopping(monitor='val_loss', patience=patience, mode='min', verbose=1),
-                     ModelCheckpoint(modelName, monitor='val_loss', mode='min', verbose=1, save_best_only=True,save_weights_only=True)]
+        callbacks = [EarlyStopping(monitor='val_loss', patience=patience, mode='min', verbose=0),
+                     ModelCheckpoint(modelName, monitor='val_loss', mode='min', verbose=0, save_best_only=True,save_weights_only=True)]
 
         # warm-up callback
         warm_up_cb = LambdaCallback(on_epoch_end=lambda epoch, logs: [warm_up(epoch)])  # , print(epoch), print(K.get_value(beta))])
@@ -295,7 +295,7 @@ class DeepMicrobiome(object):
         _, _, self.X_test = self.encoder.predict(self.X_test)
 
     # Convolutional Autoencoder
-    def cae(self, dims = [32], epochs=2000, batch_size=100, verbose=2, loss='mse', output_act=False, act='relu', patience=25, val_rate=0.2, rf_rate = 0.1, st_rate = 0.25, no_trn=False):
+    def cae(self, dims = [32], epochs=2000, batch_size=100, verbose=0, loss='mse', output_act=False, act='relu', patience=25, val_rate=0.2, rf_rate = 0.1, st_rate = 0.25, no_trn=False):
 
         # manipulating an experiment identifier in the output file
         self.prefix += 'CAE'
@@ -315,8 +315,8 @@ class DeepMicrobiome(object):
             os.remove(modelName)
 
         # callbacks for each epoch
-        callbacks = [EarlyStopping(monitor='val_loss', patience=patience, mode='min', verbose=1),
-                     ModelCheckpoint(modelName, monitor='val_loss', mode='min', verbose=1, save_best_only=True,save_weights_only=True)]
+        callbacks = [EarlyStopping(monitor='val_loss', patience=patience, mode='min', verbose=0),
+                     ModelCheckpoint(modelName, monitor='val_loss', mode='min', verbose=0, save_best_only=True,save_weights_only=True)]
 
 
         # fill out blank
@@ -376,18 +376,18 @@ class DeepMicrobiome(object):
 
         # Support Vector Machine
         if method == 'svm':
-            clf = GridSearchCV(SVC(probability=True, cache_size=cache_size), hyper_parameters, cv=StratifiedKFold(cv, shuffle=True), scoring=scoring, n_jobs=n_jobs, verbose=100, )
+            clf = GridSearchCV(SVC(probability=True, cache_size=cache_size), hyper_parameters, cv=StratifiedKFold(cv, shuffle=True), scoring=scoring, n_jobs=n_jobs, verbose=0, )
             clf.fit(self.X_train, self.y_train)
 
         # Random Forest
         if method == 'rf':
-            clf = GridSearchCV(RandomForestClassifier(n_jobs=-1, random_state=0), hyper_parameters, cv=StratifiedKFold(cv, shuffle=True), scoring=scoring, n_jobs=n_jobs, verbose=100)
+            clf = GridSearchCV(RandomForestClassifier(n_jobs=-1, random_state=0), hyper_parameters, cv=StratifiedKFold(cv, shuffle=True), scoring=scoring, n_jobs=n_jobs, verbose=0)
             clf.fit(self.X_train, self.y_train)
 
         # Multi-layer Perceptron
         if method == 'mlp':
             model = KerasClassifier(build_fn=DNN_models.mlp_model, input_dim=self.X_train.shape[1], verbose=0, )
-            clf = GridSearchCV(estimator=model, param_grid=hyper_parameters, cv=StratifiedKFold(cv, shuffle=True), scoring=scoring, n_jobs=n_jobs, verbose=100)
+            clf = GridSearchCV(estimator=model, param_grid=hyper_parameters, cv=StratifiedKFold(cv, shuffle=True), scoring=scoring, n_jobs=n_jobs, verbose=0)
             clf.fit(self.X_train, self.y_train, batch_size=32)
 
         print("Best parameters set found on development set:")

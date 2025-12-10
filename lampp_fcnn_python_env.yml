@@ -1,4 +1,4 @@
-name: phlame_fcnn_python_env
+name: lampp_fcnn_python_env
 channels:
   - conda-forge
   - bioconda

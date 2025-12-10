@@ -100,7 +100,7 @@ class DeepMicrobiome(object):
         self.printDataShapes()
 
     # Shallow Autoencoder & Deep Autoencoder
-    def ae(self, dims=[50], epochs=2000, batch_size=100, verbose=2, loss='mean_squared_error', latent_act=False,
+    def ae(self, dims=[50], epochs=2000, batch_size=100, verbose=0, loss='mean_squared_error', latent_act=False,
            output_act=False, act='relu', patience=20, val_rate=0.2, no_trn=False):
 
         # manipulating an experiment identifier in the output file
@@ -128,8 +128,8 @@ class DeepMicrobiome(object):
             os.remove(modelName)
 
         # callbacks for each epoch
-        callbacks = [EarlyStopping(monitor='val_loss', patience=patience, mode='min', verbose=1),
-                     ModelCheckpoint(modelName, monitor='val_loss', mode='min', verbose=1, save_best_only=True)]
+        callbacks = [EarlyStopping(monitor='val_loss', patience=patience, mode='min', verbose=0),
+                     ModelCheckpoint(modelName, monitor='val_loss', mode='min', verbose=0, save_best_only=True)]
 
         # spliting the training set into the inner-train and the inner-test set (validation set)
         X_inner_train, X_inner_test, y_inner_train, y_inner_test = train_test_split(self.X_train, self.y_train,
@@ -137,7 +137,8 @@ class DeepMicrobiome(object):
                                                                                     random_state=self.seed,
                                                                                     stratify=self.y_train)
 
-        # insert input shape into dimension list
+        # insert input shape into dimension list (make a copy to avoid mutating the original)
+        dims = dims.copy()
         dims.insert(0, X_inner_train.shape[1])
 
         # create autoencoder model
@@ -166,9 +167,13 @@ class DeepMicrobiome(object):
         # applying the learned encoder into the whole training and the test set.
         self.X_train = self.encoder.predict(self.X_train)
         self.X_test = self.encoder.predict(self.X_test)
+        
+        # clean up checkpoint file after use
+        if os.path.isfile(modelName):
+            os.remove(modelName)
 
     # Variational Autoencoder
-    def vae(self, dims=[10], epochs=2000, batch_size=100, verbose=2, loss='mse', output_act=False, act='relu',
+    def vae(self, dims=[10], epochs=2000, batch_size=100, verbose=0, loss='mse', output_act=False, act='relu',
             patience=25, beta=1.0, warmup=True, warmup_rate=0.01, val_rate=0.2, no_trn=False):
 
         # manipulating an experiment identifier in the output file
@@ -195,8 +200,8 @@ class DeepMicrobiome(object):
             os.remove(modelName)
 
         # callbacks for each epoch
-        callbacks = [EarlyStopping(monitor='val_loss', patience=patience, mode='min', verbose=1),
-                     ModelCheckpoint(modelName, monitor='val_loss', mode='min', verbose=1, save_best_only=True,
+        callbacks = [EarlyStopping(monitor='val_loss', patience=patience, mode='min', verbose=0),
+                     ModelCheckpoint(modelName, monitor='val_loss', mode='min', verbose=0, save_best_only=True,
                                      save_weights_only=True)]
 
         # warm-up callback
@@ -220,7 +225,8 @@ class DeepMicrobiome(object):
                                                                                     random_state=self.seed,
                                                                                     stratify=self.y_train)
 
-        # insert input shape into dimension list
+        # insert input shape into dimension list (make a copy to avoid mutating the original)
+        dims = dims.copy()
         dims.insert(0, X_inner_train.shape[1])
 
         # create vae model
@@ -245,9 +251,13 @@ class DeepMicrobiome(object):
         # applying the learned encoder into the whole training and the test set.
         _, _, self.X_train = self.encoder.predict(self.X_train)
         _, _, self.X_test = self.encoder.predict(self.X_test)
+        
+        # clean up checkpoint file after use
+        if os.path.isfile(modelName):
+            os.remove(modelName)
 
     # Convolutional Autoencoder
-    def cae(self, dims=[32], epochs=2000, batch_size=100, verbose=2, loss='mse', output_act=False, act='relu',
+    def cae(self, dims=[32], epochs=2000, batch_size=100, verbose=0, loss='mse', output_act=False, act='relu',
             patience=25, val_rate=0.2, rf_rate=0.1, st_rate=0.25, no_trn=False):
 
         # manipulating an experiment identifier in the output file
@@ -268,8 +278,8 @@ class DeepMicrobiome(object):
             os.remove(modelName)
 
         # callbacks for each epoch
-        callbacks = [EarlyStopping(monitor='val_loss', patience=patience, mode='min', verbose=1),
-                     ModelCheckpoint(modelName, monitor='val_loss', mode='min', verbose=1, save_best_only=True,
+        callbacks = [EarlyStopping(monitor='val_loss', patience=patience, mode='min', verbose=0),
+                     ModelCheckpoint(modelName, monitor='val_loss', mode='min', verbose=0, save_best_only=True,
                                      save_weights_only=True)]
 
         # fill out blank
@@ -291,7 +301,8 @@ class DeepMicrobiome(object):
                                                                                     random_state=self.seed,
                                                                                     stratify=self.y_train)
 
-        # insert input shape into dimension list
+        # insert input shape into dimension list (make a copy to avoid mutating the original)
+        dims = dims.copy()
         dims.insert(0, (onesideDim, onesideDim, 1))
 
         # create cae model
@@ -324,6 +335,10 @@ class DeepMicrobiome(object):
         self.X_train = self.encoder.predict(self.X_train)
         self.X_test = self.encoder.predict(self.X_test)
         self.printDataShapes()
+        
+        # clean up checkpoint file after use
+        if os.path.isfile(modelName):
+            os.remove(modelName)
 
     # Classification
     def classification(self, hyper_parameters, method='svm', cv=5, scoring='roc_auc', n_jobs=1, cache_size=10000):
@@ -331,25 +346,50 @@ class DeepMicrobiome(object):
 
         print("# Tuning hyper-parameters")
         print(self.X_train.shape, self.y_train.shape)
+        
+        # Determine if cross-validation should be used
+        use_cv = cv is not None and cv > 1
 
         # Support Vector Machine
         if method == 'svm':
-            clf = GridSearchCV(SVC(probability=True, cache_size=cache_size), hyper_parameters,
-                               cv=StratifiedKFold(cv, shuffle=True), scoring=scoring, n_jobs=n_jobs, verbose=100, )
-            clf.fit(self.X_train, self.y_train)
+            if not use_cv:
+                # Use first parameter combination without grid search
+                params = hyper_parameters[0] if isinstance(hyper_parameters, list) else hyper_parameters
+                clf = SVC(probability=True, cache_size=cache_size, **params)
+                clf.fit(self.X_train, self.y_train)
+                clf.best_params_ = params
+            else:
+                clf = GridSearchCV(SVC(probability=True, cache_size=cache_size), hyper_parameters,
+                                   cv=StratifiedKFold(cv, shuffle=True), scoring=scoring, n_jobs=n_jobs, verbose=0, )
+                clf.fit(self.X_train, self.y_train)
 
         # Random Forest
         if method == 'rf':
-            clf = GridSearchCV(RandomForestClassifier(n_jobs=-1, random_state=0), hyper_parameters,
-                               cv=StratifiedKFold(cv, shuffle=True), scoring=scoring, n_jobs=n_jobs, verbose=100)
-            clf.fit(self.X_train, self.y_train)
+            if not use_cv:
+                # Use first parameter combination without grid search
+                params = hyper_parameters[0] if isinstance(hyper_parameters, list) else hyper_parameters
+                clf = RandomForestClassifier(n_jobs=-1, random_state=0, **params)
+                clf.fit(self.X_train, self.y_train)
+                clf.best_params_ = params
+            else:
+                clf = GridSearchCV(RandomForestClassifier(n_jobs=-1, random_state=0), hyper_parameters,
+                                   cv=StratifiedKFold(cv, shuffle=True), scoring=scoring, n_jobs=n_jobs, verbose=0)
+                clf.fit(self.X_train, self.y_train)
 
         # Multi-layer Perceptron
         if method == 'mlp':
-            model = KerasClassifier(build_fn=DNN_models.mlp_model, input_dim=self.X_train.shape[1], verbose=0, )
-            clf = GridSearchCV(estimator=model, param_grid=hyper_parameters, cv=StratifiedKFold(cv, shuffle=True),
-                               scoring=scoring, n_jobs=n_jobs, verbose=100)
-            clf.fit(self.X_train, self.y_train, batch_size=32)
+            if not use_cv:
+                # Use parameters directly without grid search
+                params = hyper_parameters if isinstance(hyper_parameters, dict) else hyper_parameters[0]
+                model = KerasClassifier(build_fn=DNN_models.mlp_model, input_dim=self.X_train.shape[1], verbose=0, **params)
+                model.fit(self.X_train, self.y_train, batch_size=32)
+                clf = model
+                clf.best_params_ = params
+            else:
+                model = KerasClassifier(build_fn=DNN_models.mlp_model, input_dim=self.X_train.shape[1], verbose=0, )
+                clf = GridSearchCV(estimator=model, param_grid=hyper_parameters, cv=StratifiedKFold(cv, shuffle=True),
+                                   scoring=scoring, n_jobs=n_jobs, verbose=0)
+                clf.fit(self.X_train, self.y_train, batch_size=32)
 
         print("Best parameters set found on development set:")
         print()
