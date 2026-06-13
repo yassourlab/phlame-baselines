@@ -1,4 +1,4 @@
-name: lampp_general_python_env
+name: benchmark_jupyter
 channels:
   - conda-forge
   - bioconda
@@ -7,4 +7,8 @@ dependencies:
   - python=3.12.8
   - pandas=2.2.3
   - scikit-learn=1.6.0
+  - mlflow
+  - pip
+  - pip:
+      - debiasm
 

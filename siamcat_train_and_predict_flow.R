@@ -1,18 +1,15 @@
-# Install required packages
-install.packages("tidyverse", lib = "r_packages")
-install.packages("dplyr", lib = "r_packages")
-if (!requireNamespace("BiocManager", quietly = TRUE))
-  install.packages("BiocManager", lib = "r_packages")
-BiocManager::install("SIAMCAT", lib = "r_packages")
-install.packages("ranger",lib = "r_packages")
-
-# Load packages
-.libPaths("r_packages")
-library(jsonlite, lib.loc = "r_packages")
-library(rlang, lib.loc = "r_packages")
-library(tidyverse, lib.loc = "r_packages", attach.required = TRUE)
-library(dplyr, lib.loc = "r_packages", attach.required = TRUE)
-library(SIAMCAT, lib.loc = "r_packages", attach.required = TRUE)
+# Install required packages (one-time setup):
+# install.packages("tidyverse")
+# install.packages("dplyr")
+# if (!requireNamespace("BiocManager", quietly = TRUE))
+#   install.packages("BiocManager")
+# BiocManager::install("SIAMCAT")
+# install.packages("ranger")
+library(jsonlite)
+library(rlang)
+library(tidyverse)
+library(dplyr)
+library(SIAMCAT)
 
 options(error = traceback)
 ############# Helper function for training and testing ############
@@ -22,6 +19,7 @@ train_and_test_model <- function(features,
                                  test_features,
                                  num_folds,
                                  num_repeats,
+                                 inseparable_var = "subject_id",
                                  filter_method = "abundance",
                                  filter_cutoff = 0.001,
                                  norm = "log.std",
@@ -50,6 +48,8 @@ train_and_test_model <- function(features,
     siamcat_obj,
     num.folds = num_folds,
     num.resample = num_repeats,
+    stratify = TRUE,
+    inseparable = inseparable_var,
     verbose = 0
   )
 
@@ -74,9 +74,9 @@ train_and_test_model <- function(features,
     sample_id = colnames(test_features),
     row.names = colnames(test_features)
   )
-  
+
   siamcat_test <- siamcat(
-    feat = test_features, 
+    feat = test_features,
     meta = test_meta,
     verbose = 0
   )
@@ -104,8 +104,8 @@ train_and_test_model <- function(features,
   )
 
   return(list(
-    current_result = current_result, 
-    test_predictions = test_pred_matrix, 
+    current_result = current_result,
+    test_predictions = test_pred_matrix,
     time_elapsed = time_elapsed,
     siamcat_obj = siamcat_obj,
     eval = eval
@@ -148,8 +148,8 @@ save_outputs <- function(pred_vector, time_elapsed, output_dir) {
 
 ############# run_with_params: Shared function for training with parameter grid ############
 
-run_with_params <- function(features, meta, test_features, test_sample_ids, 
-                           filter_cutoffs, norm_methods, ml_methods, 
+run_with_params <- function(features, meta, test_features, test_sample_ids,
+                           filter_cutoffs, norm_methods, ml_methods,
                            run_type, partial_output_dir) {
   cat(sprintf("Training with parameter search (%s)...\n", run_type))
 
@@ -189,7 +189,7 @@ run_with_params <- function(features, meta, test_features, test_sample_ids,
             ml = ml
           )
         }, error = function(e) {
-          cat(sprintf("ERROR: Failed with filter_cutoff=%s, ml=%s, norm=%s\n", 
+          cat(sprintf("ERROR: Failed with filter_cutoff=%s, ml=%s, norm=%s\n",
                      filter_cutoff, ml, norm))
           cat(sprintf("Error message: %s\n", e$message))
           return(NULL)
@@ -204,13 +204,13 @@ run_with_params <- function(features, meta, test_features, test_sample_ids,
         # Create result row
         result_row <- result$current_result
         result_row$mean_fit_time <- result$time_elapsed / num_folds
-        
+
         # Extract fold-level AUC scores from evaluation data
         fold_aucs <- result$eval$auroc
         for (fold_idx in 1:length(fold_aucs)) {
           result_row[[paste0("fold_", fold_idx, "_auc")]] <- fold_aucs[fold_idx]
         }
-        
+
         # Add std_test_score
         result_row$std_test_score <- sd(fold_aucs)
 
@@ -232,7 +232,8 @@ run_with_params <- function(features, meta, test_features, test_sample_ids,
 
   cat(sprintf(
     "\nBest parameters: filter_cutoff=%s, ml=%s, norm=%s, AUC=%.4f\n",
-    best_params$filter_cutoff, best_params$ml, best_params$norm, best_params$mean_test_score
+    best_params$filter_cutoff, best_params$ml, best_params$norm,
+    best_params$mean_test_score
   ))
 
   # Train final model with best parameters
@@ -256,16 +257,157 @@ run_with_params <- function(features, meta, test_features, test_sample_ids,
   return(full_output_dir)
 }
 
+############# Config helpers for per-configuration runs ############
+
+build_param_configs <- function(run_type) {
+  if (run_type == "default") {
+    filter_cutoffs <- c(0.001)
+    norm_methods <- c("log.std")
+    ml_methods <- c("lasso")
+  } else if (run_type == "optimized") {
+    filter_cutoffs <- c(0.001, 0.005, 0.01)
+    norm_methods <- c("rank.unit", "rank.std", "log.std", "log.unit", "log.clr", "std")
+    ml_methods <- c("lasso", "enet", "ridge", "lasso_ll", "ridge_ll", "randomForest")
+  } else {
+    stop(sprintf("Invalid run_type: %s", run_type))
+  }
+
+  configs <- list()
+  counter <- 0
+  for (filter_cutoff in filter_cutoffs) {
+    for (ml in ml_methods) {
+      for (norm in norm_methods) {
+        counter <- counter + 1
+        configs[[counter]] <- list(
+          filter_cutoff = filter_cutoff,
+          ml = ml,
+          norm = norm
+        )
+      }
+    }
+  }
+
+  return(configs)
+}
+
+config_output_dir <- function(partial_output_dir, run_type, config_index) {
+  return(file.path(partial_output_dir, run_type, "configs", sprintf("config_%04d", config_index)))
+}
+
+run_single_config <- function(features, meta, test_features, test_sample_ids,
+                              run_type, partial_output_dir, config_index) {
+  configs <- build_param_configs(run_type)
+
+  if (config_index < 0 || config_index >= length(configs)) {
+    stop(sprintf("Config index %d out of range (max %d)", config_index, length(configs) - 1))
+  }
+
+  config <- configs[[config_index + 1]]
+  cat(sprintf(
+    "Running config %d: filter_cutoff=%s, ml=%s, norm=%s\n",
+    config_index, config$filter_cutoff, config$ml, config$norm
+  ))
+
+  num_folds <- 5
+  num_repeats <- 1
+
+  result <- train_and_test_model(
+    features = features,
+    meta = meta,
+    test_features = test_features,
+    num_folds = num_folds,
+    num_repeats = num_repeats,
+    filter_method = "abundance",
+    filter_cutoff = config$filter_cutoff,
+    norm = config$norm,
+    ml = config$ml
+  )
+
+  result_row <- result$current_result
+  result_row$mean_fit_time <- result$time_elapsed / num_folds
+
+  fold_aucs <- result$eval$auroc
+  for (fold_idx in 1:length(fold_aucs)) {
+    result_row[[paste0("fold_", fold_idx, "_auc")]] <- fold_aucs[fold_idx]
+  }
+  result_row$std_test_score <- sd(fold_aucs)
+
+  output_dir <- config_output_dir(partial_output_dir, run_type, config_index)
+  dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+  write.csv(result_row,
+    file = file.path(output_dir, "params_search.csv"),
+    row.names = FALSE
+  )
+
+  return(output_dir)
+}
+
+aggregate_configs <- function(features, meta, test_features, test_sample_ids,
+                              run_type, partial_output_dir) {
+  configs <- build_param_configs(run_type)
+
+  all_results <- data.frame()
+  missing <- c()
+  for (config_index in 0:(length(configs) - 1)) {
+    output_dir <- config_output_dir(partial_output_dir, run_type, config_index)
+    params_path <- file.path(output_dir, "params_search.csv")
+    if (!file.exists(params_path)) {
+      missing <- c(missing, output_dir)
+      next
+    }
+    result_row <- read.csv(params_path)
+    all_results <- rbind(all_results, result_row)
+  }
+
+  if (length(missing) > 0) {
+    missing_list <- paste(missing, collapse = "\n")
+    stop(sprintf("Missing config outputs:\n%s", missing_list))
+  }
+
+  run_output_dir <- file.path(partial_output_dir, run_type)
+  dir.create(run_output_dir, recursive = TRUE, showWarnings = FALSE)
+  write.csv(all_results,
+    file = file.path(run_output_dir, "params_search.csv"),
+    row.names = FALSE
+  )
+
+  best_idx <- which.max(all_results$mean_test_score)
+  best_params <- all_results[best_idx, ]
+
+  cat(sprintf(
+    "\nBest parameters: filter_cutoff=%s, ml=%s, norm=%s, AUC=%.4f\n",
+    best_params$filter_cutoff, best_params$ml, best_params$norm,
+    best_params$mean_test_score
+  ))
+
+  final_result <- train_and_test_model(
+    features = features,
+    meta = meta,
+    test_features = test_features,
+    num_folds = 5,
+    num_repeats = 1,
+    filter_method = "abundance",
+    filter_cutoff = best_params$filter_cutoff,
+    norm = best_params$norm,
+    ml = best_params$ml
+  )
+
+  pred_vector <- extract_predictions(final_result$test_predictions)
+  save_outputs(pred_vector, final_result$time_elapsed, run_output_dir)
+
+  return(run_output_dir)
+}
+
 ############# run_default: Train with default parameters ############
 
 run_default <- function(features, meta, test_features, test_sample_ids, partial_output_dir) {
   cat("Training with default parameters...\n")
-  
+
   # Single parameter set (default)
   filter_cutoffs <- c(0.001)
   norm_methods <- c("log.std")
   ml_methods <- c("lasso")
-  
+
   return(run_with_params(features, meta, test_features, test_sample_ids,
                         filter_cutoffs, norm_methods, ml_methods,
                         "default", partial_output_dir))
@@ -279,10 +421,10 @@ run_optimized <- function(features, meta, test_features, test_sample_ids, partia
   # Define parameter grid
   filter_cutoffs <- c(0.001, 0.005, 0.01)
   norm_methods <- c("rank.unit", "rank.std", "log.std", "log.unit", "log.clr", "std")
-  ml_methods <- c("lasso", "enet", "ridge", "lasso_ll", "ridge_ll", "randomForest") 
- 
-  
-  
+  ml_methods <- c("lasso", "enet", "ridge", "lasso_ll", "ridge_ll", "randomForest")
+
+
+
   return(run_with_params(features, meta, test_features, test_sample_ids,
                         filter_cutoffs, norm_methods, ml_methods,
                         "optimized", partial_output_dir))
@@ -296,35 +438,109 @@ args <- commandArgs(trailingOnly = TRUE)
 task_name <- args[1]
 benchmark_datasets <- args[2]
 
+mode <- "full"
+run_type <- NA
+config_index <- NA
+
+if (length(args) > 2) {
+  i <- 3
+  while (i <= length(args)) {
+    if (args[i] == "--mode") {
+      mode <- args[i + 1]
+      i <- i + 2
+    } else if (args[i] == "--run-type") {
+      run_type <- args[i + 1]
+      i <- i + 2
+    } else if (args[i] == "--config-index") {
+      config_index <- as.integer(args[i + 1])
+      i <- i + 2
+    } else {
+      stop(sprintf("Unknown argument: %s", args[i]))
+    }
+  }
+}
+
+if (mode == "list-configs") {
+  if (is.na(run_type)) {
+    stop("--run-type is required for list-configs mode")
+  }
+  configs <- build_param_configs(run_type)
+  for (idx in seq_along(configs)) {
+    cat(sprintf("%d\t%s\n", idx - 1, toJSON(configs[[idx]], auto_unbox = TRUE)))
+  }
+  quit(save = "no", status = 0)
+}
+
 cat(sprintf("Task name: %s\n", task_name))
 cat(sprintf("Benchmark datasets dir: %s\n", benchmark_datasets))
 
 # Load train and test data
 train_path <- sprintf("%s/%s_train.csv", benchmark_datasets, task_name)
 test_x_path <- sprintf("%s/%s_test.csv", benchmark_datasets, task_name)
-test_y_path <- sprintf("%s/%s_test_gt.csv", benchmark_datasets, task_name)
 
 train_data <- data.frame(read_csv(train_path, col_types = cols(label = col_character())))
 rownames(train_data) <- train_data$sample_id
 
-features <- t(train_data %>% select(-label, -sample_id, -subject_id, -study_id)) / 100
+features <- t(train_data %>% select(-label, -sample_id, -subject_id, -study_id))
 meta <- train_data %>% select(sample_id, subject_id, label)
 
 # Read test data
 test_data <- data.frame(read_csv(test_x_path))
 rownames(test_data) <- test_data$sample_id
-test_features <- t(test_data %>% select(-sample_id)) / 100
+test_features <- t(test_data %>% select(-sample_id))
 
 # Define output directory
 output_dir <- sprintf("benchmarking_outputs/%s_siamcat", task_name)
 
-# Run with default parameters
-cat("\n========== Running Default Model ==========\n")
-default_output_dir <- run_default(features, meta, test_features, test_data$sample_id, output_dir)
+if (mode == "run-config") {
+  if (is.na(run_type) || is.na(config_index)) {
+    stop("--run-type and --config-index are required for run-config mode")
+  }
+  run_single_config(
+    features,
+    meta,
+    test_features,
+    test_data$sample_id,
+    run_type,
+    output_dir,
+    config_index
+  )
+  quit(save = "no", status = 0)
+}
 
-# Run with parameter optimization
+if (mode == "aggregate") {
+  if (is.na(run_type)) {
+    stop("--run-type is required for aggregate mode")
+  }
+  aggregate_configs(
+    features,
+    meta,
+    test_features,
+    test_data$sample_id,
+    run_type,
+    output_dir
+  )
+  quit(save = "no", status = 0)
+}
+
+# Full mode: run default and optimized in one process (legacy behavior)
+cat("\n========== Running Default Model ==========\n")
+default_output_dir <- run_default(
+  features,
+  meta,
+  test_features,
+  test_data$sample_id,
+  output_dir
+)
+
 cat("\n========== Running Optimized Model ==========\n")
-optimized_output_dir <- run_optimized(features, meta, test_features, test_data$sample_id, output_dir)
+optimized_output_dir <- run_optimized(
+  features,
+  meta,
+  test_features,
+  test_data$sample_id,
+  output_dir
+)
 
 cat("\n========== SIAMCAT Training Complete ==========\n")
 cat(sprintf("Default outputs: %s\n", default_output_dir))

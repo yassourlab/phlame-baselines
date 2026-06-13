@@ -1,4 +1,4 @@
-name: lampp_fcnn_python_env
+name: simple_pytorch
 channels:
   - conda-forge
   - bioconda
@@ -7,6 +7,7 @@ dependencies:
   - python=3.13.3
   - numpy=2.2.4
   - pandas=2.2.3
+  - scikit-learn
   - pip=25.0.1
   - pip:
       - torch==2.6.0

@@ -1,4 +1,4 @@
-name: lampp_deepmicro_python_env
+name: jupyter_deep_micro_cuda10
 channels:
   - conda-forge
   - bioconda

@@ -5,12 +5,12 @@ import sys
 import time
 import itertools
 import numpy as np
-from sklearn.model_selection import KFold
 from sklearn.metrics import roc_auc_score
 import random
 import tensorflow as tf
 sys.path.append('..')
-from benchmark_utils import load_benchmark_data
+from benchmark_utils import load_benchmark_data, SEED
+from cv_splitters import build_group_cv
 # # original hyperparameters
 # AE_HYPER_PARAMETERS = {'dims':[[32],[64],[128],[256],[512],
 #                         [64,32],[128,64],[256,128],[512,256],
@@ -67,10 +67,6 @@ MLP_HYPER_PARAMETERS = {
 
 }
 
-# Seed for reproducibility (consistent with other benchmark scripts)
-SEED = 17
-
-
 def set_seeds(seed=SEED):
     """Set all random seeds for reproducibility."""
     random.seed(seed)
@@ -81,7 +77,11 @@ def set_seeds(seed=SEED):
 
 def load_data(benchmark_datasets_dir, task_name):
     """Load train and test datasets using shared benchmark_utils function."""
-    train_df, X_test_df = load_benchmark_data(benchmark_datasets_dir, task_name)
+    train_df, X_test_df, train_subject_ids = load_benchmark_data(
+        benchmark_datasets_dir,
+        task_name,
+        return_subject_ids=True,
+    )
     
     X_train = train_df.drop(columns=['label']).values
     y_train = train_df['label'].values
@@ -91,7 +91,7 @@ def load_data(benchmark_datasets_dir, task_name):
     test_y_path = f"{benchmark_datasets_dir}/{task_name}_test_gt.csv"
     y_test = pd.read_csv(test_y_path)['label'].values
     
-    return X_train, y_train, X_test, y_test, X_test_df
+    return X_train, y_train, X_test, y_test, X_test_df, train_subject_ids
 
 
 def setup_output_directory(task_name, subdir):
@@ -155,7 +155,10 @@ def run_with_configs(task_name, benchmark_datasets_dir, ae_configs, clf_configs,
     Returns:
         full_output_dir: Path to the output directory
     """
-    X_train, y_train, X_test, y_test, X_test_df = load_data(benchmark_datasets_dir, task_name)
+    X_train_base, y_train, X_test_base, y_test, X_test_df, train_subject_ids = load_data(
+        benchmark_datasets_dir,
+        task_name,
+    )
     full_output_dir = setup_output_directory(task_name, run_type)
     
     # Generate all autoencoder parameter combinations
@@ -186,46 +189,49 @@ def run_with_configs(task_name, benchmark_datasets_dir, ae_configs, clf_configs,
     # Collect all fold results
     all_fold_results = []
     
-    # Setup KFold splits once
-    kf = KFold(n_splits=N_SPLITS, shuffle=True, random_state=SEED)
-    
+    grouped_cv = build_group_cv(n_splits=N_SPLITS)
+    X_train = X_train_base
+    X_test = X_test_base
+
     # OUTER LOOP: Iterate through folds
-    for fold_idx, (train_idx, val_idx) in enumerate(kf.split(X_train)):
+    for fold_idx, (train_idx, val_idx) in enumerate(
+        grouped_cv.split(X_train, y_train, train_subject_ids)
+    ):
         print(f"\n=== Processing Fold {fold_idx + 1}/{N_SPLITS} ===")
-        
+
         X_train_fold = X_train[train_idx]
         y_train_fold = y_train[train_idx]
         X_val_fold = X_train[val_idx]
         y_val_fold = y_train[val_idx]
-        
+
         # Create temporary output directory for this fold
         temp_dir = f'{full_output_dir}/temp_fold_{fold_idx}'
         os.makedirs(temp_dir, exist_ok=True)
-        
+
         # MIDDLE LOOP: Iterate through autoencoder configurations
         for ae_type, ae_param_dict in all_ae_configs:
             print(f" Training Autoencoder: {ae_type} with params {ae_param_dict}")
             ae_start_time = time.time()
-            
+
             # Initialize DeepMicrobiome with fold data
-            dm = DeepMicrobiome(X_train_fold, X_val_fold, y_train_fold, y_val_fold, 
-                              task_name, temp_dir, seed=SEED)
-            
+            dm = DeepMicrobiome(X_train_fold, X_val_fold, y_train_fold, y_val_fold,
+                                task_name, temp_dir, seed=SEED)
+
             # Train autoencoder once for this fold and ae configuration
             train_autoencoder(dm, ae_type, ae_param_dict)
             ae_train_time = time.time() - ae_start_time
-            
+
             # INNER LOOP: Iterate through classifier configurations
             for clf_type, clf_param_dict in all_clf_configs:
                 clf_start_time = time.time()
-                
+
                 # Train classifier on the encoded representations
                 val_prob = train_classifier(dm, clf_type, clf_param_dict)
-                
+
                 # Calculate AUC score
                 fold_auc = roc_auc_score(y_val_fold, val_prob[:, 1])
                 clf_train_time = time.time() - clf_start_time
-                
+
                 # Store this fold result
                 result = {
                     'fold_idx': fold_idx,
@@ -239,7 +245,7 @@ def run_with_configs(task_name, benchmark_datasets_dir, ae_configs, clf_configs,
                     'total_fit_time': ae_train_time + clf_train_time
                 }
                 all_fold_results.append(result)
-        
+
         # Clean up temporary directory for this fold
         import shutil
         if os.path.exists(temp_dir):
@@ -302,7 +308,10 @@ def run_with_configs(task_name, benchmark_datasets_dir, ae_configs, clf_configs,
     print("\nTraining final model with best config on full training data...")
     
     start_time = time.time()
-    dm_final = DeepMicrobiome(X_train, X_test, y_train, y_test, task_name, full_output_dir, seed=SEED)
+    X_train_final = X_train_base
+    X_test_final = X_test_base
+
+    dm_final = DeepMicrobiome(X_train_final, X_test_final, y_train, y_test, task_name, full_output_dir, seed=SEED)
     train_autoencoder(dm_final, best_config['ae_type'], best_config['ae_params'])
     test_prob = train_classifier(dm_final, best_config['clf_type'], 
                                  {k:v for k,v in best_config['clf_params'].items() if v!=NA_PARAMS_PLACEHOLDER}, 
@@ -325,7 +334,13 @@ def run_default(task_name, benchmark_datasets_dir):
     ae_configs = [('cae', {})]
     clf_configs = [('rf', {})]
     
-    return run_with_configs(task_name, benchmark_datasets_dir, ae_configs, clf_configs, 'default')
+    return run_with_configs(
+        task_name,
+        benchmark_datasets_dir,
+        ae_configs,
+        clf_configs,
+        'default',
+    )
 
 
 def run_optimized(task_name, benchmark_datasets_dir):
@@ -344,7 +359,13 @@ def run_optimized(task_name, benchmark_datasets_dir):
         ('mlp', MLP_HYPER_PARAMETERS)
     ]
     
-    return run_with_configs(task_name, benchmark_datasets_dir, ae_configs, clf_configs, 'optimized')
+    return run_with_configs(
+        task_name,
+        benchmark_datasets_dir,
+        ae_configs,
+        clf_configs,
+        'optimized',
+    )
 
 
 if __name__ == '__main__':

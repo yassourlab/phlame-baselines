@@ -9,15 +9,15 @@ import os
 import time
 import numpy as np
 import random
-from sklearn.model_selection import KFold
 from sklearn.metrics import roc_auc_score
-from benchmark_utils import load_benchmark_data
+from benchmark_utils import load_benchmark_data, SEED
+from cv_splitters import build_stratified_group_cv
 
 
 # ---------------------------
 # Seed for Reproducibility
 # ---------------------------
-def set_seed(seed=42):
+def set_seed(seed=SEED):
     """Set random seeds for reproducibility."""
     random.seed(seed)
     np.random.seed(seed)
@@ -46,35 +46,12 @@ class FCNN(nn.Module):
         return self.model(x)
 
 
-class TransformerClassifier(nn.Module):
-    def __init__(self, input_dim, d_model=32, nhead=4, num_layers=2, ff_hidden_dim=64):
-        super(TransformerClassifier, self).__init__()
-        self.embedding = nn.Linear(1, d_model)
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model,
-            nhead=nhead,
-            dim_feedforward=ff_hidden_dim,
-            batch_first=True
-        )
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-        self.classifier = nn.Linear(d_model, 1)  # Single output neuron
-
-    def forward(self, x):
-        x = x.unsqueeze(-1)             # (batch, features, 1)
-        x = self.embedding(x)           # (batch, features, d_model)
-        x = self.transformer(x)         # (batch, features, d_model)
-        x = x.mean(dim=1)               # mean pooling over features
-        return self.classifier(x)
-
-
 # ---------------------------
 # Data prep
 # ---------------------------
 def prepare_data(train, test_x):
-    # train already has sample_id and subject_id removed by load_benchmark_data
     X_train = train.drop(columns=['label']).values.astype('float32')
-    y_train = train['label'].values.astype('float32')  # Changed to float32 for BCEWithLogitsLoss
-    # test_x still has sample_id and subject_id
+    y_train = train['label'].values.astype('float32')
     X_test = test_x.drop(columns=['sample_id']).values.astype('float32')
     return torch.tensor(X_train), torch.tensor(y_train), torch.tensor(X_test)
 
@@ -83,15 +60,7 @@ def prepare_data(train, test_x):
 # Training for one split
 # ---------------------------
 def train_model(train_loader, val_loader, input_dim, model_type, params, device):
-    if model_type == 'transformer':
-        model = TransformerClassifier(
-            input_dim=input_dim,
-            d_model=params["d_model"],
-            nhead=params["nhead"],
-            num_layers=params["num_layers"],
-            ff_hidden_dim=params["ff_hidden_dim"]
-        ).to(device)
-    elif model_type == 'fully_connected':
+    if model_type == 'fully_connected':
         model = FCNN(
             input_dim=input_dim,
             hidden_dim=params["hidden_dim"]
@@ -107,7 +76,8 @@ def train_model(train_loader, val_loader, input_dim, model_type, params, device)
         for X_batch, y_batch in train_loader:
             X_batch, y_batch = X_batch.to(device), y_batch.to(device)
             optimizer.zero_grad()
-            logits = model(X_batch).squeeze()  # Squeeze to match y_batch shape
+            # Keep logits 1D even for batch_size=1 to match y_batch shape.
+            logits = model(X_batch).view(-1)
             loss = criterion(logits, y_batch)
             loss.backward()
             optimizer.step()
@@ -118,7 +88,7 @@ def train_model(train_loader, val_loader, input_dim, model_type, params, device)
     with torch.no_grad():
         for X_batch, y_batch in val_loader:
             X_batch = X_batch.to(device)
-            logits = model(X_batch).squeeze()
+            logits = model(X_batch).view(-1)
             probs = torch.sigmoid(logits).cpu().numpy()
             y_pred.extend(probs)
             y_true.extend(y_batch.numpy())
@@ -134,19 +104,20 @@ def train_model(train_loader, val_loader, input_dim, model_type, params, device)
 # ---------------------------
 # Cross-validation evaluation
 # ---------------------------
-def cross_val_score_auc(X, y, input_dim, model_type, params, device, folds=5):
+def cross_val_score_auc(X, y, groups, input_dim, model_type, params, device, folds=5):
     """
     Perform cross-validation and return detailed metrics.
     
     Returns:
         dict with keys: 'fold_scores', 'fold_times', 'mean_score', 'std_score', 'mean_time', 'std_time'
     """
-    kf = KFold(n_splits=folds, shuffle=True, random_state=42)
+    grouped_cv = build_stratified_group_cv(n_splits=folds, random_state=SEED)
     dataset = TensorDataset(X, y)
 
     scores = []
     times = []
-    for train_idx, val_idx in kf.split(X):
+    for train_idx, val_idx in grouped_cv.split(X.cpu().numpy(), y.cpu().numpy(), groups):
+        print('len(train_idx), len(val_idx):', len(train_idx), len(val_idx))
         train_subset = Subset(dataset, train_idx)
         val_subset = Subset(dataset, val_idx)
 
@@ -174,7 +145,7 @@ def cross_val_score_auc(X, y, input_dim, model_type, params, device, folds=5):
 def predict_proba(model, X_test_tensor, device):
     model.eval()
     with torch.no_grad():
-        logits = model(X_test_tensor.to(device)).squeeze()
+        logits = model(X_test_tensor.to(device)).view(-1)
         probabilities = torch.sigmoid(logits).cpu().numpy()
     return probabilities
 
@@ -189,15 +160,6 @@ DEFAULT_PARAMS = {
         "lr": 1e-3,
         "epochs": 20,
         "batch_size": 128,
-    },
-    "transformer": {
-        "d_model": 32,
-        "nhead": 4,
-        "num_layers": 2,
-        "ff_hidden_dim": 64,
-        "lr": 1e-3,
-        "epochs": 20,
-        "batch_size": 32,
     }
 }
 
@@ -207,27 +169,27 @@ PARAM_GRIDS = {
         "lr": [1e-2, 1e-3, 1e-4],
         "epochs": [20, 50, 100],
         "batch_size": [64, 128, 256],
-    },
-    "transformer": {
-        "d_model": [16, 32],
-        "nhead": [2, 4],
-        "num_layers": [1, 2, 3],
-        "ff_hidden_dim": [32, 64],
-        "lr": [1e-3, 1e-4],
-        "epochs": [10, 20],
-        "batch_size": [64],
     }
 }
 
 
-def run_with_params(train, test_x, model_name, param_combinations, run_type, device, task_name):
+def run_with_params(
+    train,
+    test_x,
+    train_subject_ids,
+    model_name,
+    param_combinations,
+    run_type,
+    device,
+    task_name,
+):
     """
     Run model with given parameter combinations using CV paradigm.
     
     Args:
         train: Training data
         test_x: Test features
-        model_name: Name of the model to run ('transformer' or 'fully_connected')
+        model_name: Name of the model to run ('fully_connected')
         param_combinations: List of parameter dictionaries to evaluate
         run_type: String identifier for output directory ('default' or 'optimized')
         device: PyTorch device
@@ -251,9 +213,12 @@ def run_with_params(train, test_x, model_name, param_combinations, run_type, dev
     print(f"Running hyperparameter search with {len(param_combinations)} combinations...")
     
     for i, params in enumerate(param_combinations):
+        params = params.copy()
         print(f"Evaluating combination {i+1}/{len(param_combinations)}: {params}")
+
         cv_results = cross_val_score_auc(
-            X_train_tensor, y_train_tensor, 
+            X_train_tensor, y_train_tensor,
+            train_subject_ids,
             X_train_tensor.shape[1],
             model_name, params, device, folds=5
         )
@@ -274,22 +239,13 @@ def run_with_params(train, test_x, model_name, param_combinations, run_type, dev
         # Track best parameters
         if cv_results['mean_score'] > best_auc:
             best_auc = cv_results['mean_score']
-            best_params = params
+            best_params = params.copy()
     
     # Train final model with best params on full training data
-    if model_name == "transformer":
-        best_model = TransformerClassifier(
-            input_dim=X_train_tensor.shape[1],
-            d_model=best_params["d_model"],
-            nhead=best_params["nhead"],
-            num_layers=best_params["num_layers"],
-            ff_hidden_dim=best_params["ff_hidden_dim"]
-        ).to(device)
-    else:
-        best_model = FCNN(
-            input_dim=X_train_tensor.shape[1],
-            hidden_dim=best_params["hidden_dim"]
-        ).to(device)
+    best_model = FCNN(
+        input_dim=X_train_tensor.shape[1],
+        hidden_dim=best_params["hidden_dim"]
+    ).to(device)
     
     criterion = nn.BCEWithLogitsLoss()
     optimizer = optim.Adam(best_model.parameters(), lr=best_params["lr"])
@@ -302,7 +258,7 @@ def run_with_params(train, test_x, model_name, param_combinations, run_type, dev
         for X_batch, y_batch in full_loader:
             X_batch, y_batch = X_batch.to(device), y_batch.to(device)
             optimizer.zero_grad()
-            logits = best_model(X_batch).squeeze()
+            logits = best_model(X_batch).view(-1)
             loss = criterion(logits, y_batch)
             loss.backward()
             optimizer.step()
@@ -312,7 +268,7 @@ def run_with_params(train, test_x, model_name, param_combinations, run_type, dev
     # Get predictions
     best_model.eval()
     with torch.no_grad():
-        logits = best_model(X_test_tensor.to(device)).squeeze()
+        logits = best_model(X_test_tensor.to(device)).view(-1)
         predictions = torch.sigmoid(logits).cpu().numpy()
     
     # Save predictions
@@ -332,16 +288,24 @@ def run_with_params(train, test_x, model_name, param_combinations, run_type, dev
     return full_output_dir
 
 
-def run_default(train, test_x, model_name, device, task_name):
+def run_default(train, test_x, train_subject_ids, model_name, device, task_name):
     """Run model with default parameters, using CV paradigm with single parameter set."""
-    params = DEFAULT_PARAMS[model_name]
-    # Create single-element list for parameter combinations
+    params = DEFAULT_PARAMS[model_name].copy()
     param_combinations = [params]
     
-    return run_with_params(train, test_x, model_name, param_combinations, 'default', device, task_name)
+    return run_with_params(
+        train,
+        test_x,
+        train_subject_ids,
+        model_name,
+        param_combinations,
+        'default',
+        device,
+        task_name,
+    )
 
 
-def run_optimized(train, test_x, model_name, device, task_name):
+def run_optimized(train, test_x, train_subject_ids, model_name, device, task_name):
     """Run model with hyperparameter search, logging all iterations."""
     param_grid = PARAM_GRIDS[model_name]
     
@@ -349,22 +313,35 @@ def run_optimized(train, test_x, model_name, device, task_name):
     keys, values = zip(*param_grid.items())
     param_combinations = [dict(zip(keys, combo)) for combo in itertools.product(*values)]
     
-    return run_with_params(train, test_x, model_name, param_combinations, 'optimized', device, task_name)
+    return run_with_params(
+        train,
+        test_x,
+        train_subject_ids,
+        model_name,
+        param_combinations,
+        'optimized',
+        device,
+        task_name,
+    )
 
 
 if __name__ == '__main__':
     # Set seed for reproducibility
-    set_seed(42)
+    set_seed(SEED)
     
     task_name, benchmark_datasets_dir, model_name = sys.argv[1:]
-    train, test_x = load_benchmark_data(benchmark_datasets_dir, task_name)
+    train, test_x, train_subject_ids = load_benchmark_data(
+        benchmark_datasets_dir,
+        task_name,
+        return_subject_ids=True,
+    )
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print('cuda available: ', torch.cuda.is_available())
     
     # Default run
     print(f"Starting {model_name} default run")
-    default_output_dir = run_default(train, test_x, model_name, device, task_name)
+    default_output_dir = run_default(train, test_x, train_subject_ids, model_name, device, task_name)
     
     # Optimized run with hyperparameter search
     print(f"Starting {model_name} hyperparameter search")
-    optimized_output_dir = run_optimized(train, test_x, model_name, device, task_name)
+    optimized_output_dir = run_optimized(train, test_x, train_subject_ids, model_name, device, task_name)
